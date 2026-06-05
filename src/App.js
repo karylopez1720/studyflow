@@ -1,4 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { db, auth } from './firebase';
+import { collection, addDoc, onSnapshot, query, where } from 'firebase/firestore';
+import { GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth';
 import './App.css';
 
 function App() {
@@ -6,12 +9,51 @@ function App() {
   const [materias, setMaterias] = useState([]);
   const [mostrarForm, setMostrarForm] = useState(false);
   const [nuevaMateria, setNuevaMateria] = useState({ nombre: '', parcial: '', final: '' });
+  const [guardando, setGuardando] = useState(false);
+  const [usuario, setUsuario] = useState(null);
+  const [cargandoAuth, setCargandoAuth] = useState(true);
 
-  const agregarMateria = () => {
-    if (!nuevaMateria.nombre) return;
-    setMaterias([...materias, { ...nuevaMateria, id: Date.now(), progreso: 0 }]);
+  // Escuchar estado de sesión
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (user) => {
+      setUsuario(user);
+      setCargandoAuth(false);
+    });
+    return () => unsub();
+  }, []);
+
+  // Cargar materias solo del usuario logueado
+  useEffect(() => {
+    if (!usuario) return;
+    const q = query(collection(db, 'materias'), where('uid', '==', usuario.uid));
+    const unsub = onSnapshot(q, (snap) => {
+      setMaterias(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
+    return () => unsub();
+  }, [usuario]);
+
+  const loginConGoogle = async () => {
+    const provider = new GoogleAuthProvider();
+    await signInWithPopup(auth, provider);
+  };
+
+  const cerrarSesion = async () => {
+    await signOut(auth);
+    setMaterias([]);
+  };
+
+  const agregarMateria = async () => {
+    if (!nuevaMateria.nombre || !usuario) return;
+    setGuardando(true);
+    await addDoc(collection(db, 'materias'), {
+      ...nuevaMateria,
+      uid: usuario.uid,       // ← vinculada al usuario
+      progreso: 0,
+      creadoEn: new Date()
+    });
     setNuevaMateria({ nombre: '', parcial: '', final: '' });
     setMostrarForm(false);
+    setGuardando(false);
   };
 
   const diasRestantes = (fecha) => {
@@ -28,6 +70,42 @@ function App() {
     return { bg: '#EEEDFE', color: '#534AB7' };
   };
 
+  // Pantalla de carga inicial
+  if (cargandoAuth) {
+    return (
+      <div style={estilos.contenedor}>
+        <div style={estilos.phone}>
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#888', fontSize: 14 }}>
+            Cargando...
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Pantalla de login
+  if (!usuario) {
+    return (
+      <div style={estilos.contenedor}>
+        <div style={estilos.phone}>
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 32, gap: 24 }}>
+            <div style={{ fontSize: 48 }}>📚</div>
+            <div style={{ fontSize: 24, fontWeight: 600, color: '#222', textAlign: 'center' }}>StudyFlow</div>
+            <div style={{ fontSize: 14, color: '#888', textAlign: 'center', lineHeight: 1.5 }}>
+              Tu compañero de estudio universitario. Organizá tus materias, seguí tu progreso y competí con amigos.
+            </div>
+            <button style={estilos.btnGoogle} onClick={loginConGoogle}>
+              <span style={{ fontSize: 18 }}>G</span>
+              Continuar con Google
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const nombreCorto = usuario.displayName?.split(' ')[0] || 'vos';
+
   return (
     <div style={estilos.contenedor}>
       <div style={estilos.phone}>
@@ -36,10 +114,18 @@ function App() {
           <div style={estilos.contenido}>
             <div style={estilos.header}>
               <div>
-                <div style={estilos.saludo}>Hola, López 👋</div>
+                <div style={estilos.saludo}>Hola, {nombreCorto} 👋</div>
                 <div style={estilos.titulo}>Mi semana</div>
               </div>
-              <div style={estilos.avatar}>LO</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <img
+                  src={usuario.photoURL}
+                  alt="avatar"
+                  style={{ width: 36, height: 36, borderRadius: '50%', objectFit: 'cover' }}
+                  onError={e => { e.target.style.display = 'none'; }}
+                />
+                <button style={estilos.btnLogout} onClick={cerrarSesion}>Salir</button>
+              </div>
             </div>
 
             <div style={estilos.rachaBox}>
@@ -84,7 +170,7 @@ function App() {
               <div style={estilos.aiIcon}>✨</div>
               <div style={estilos.aiText}>
                 {materias.length === 0
-                  ? <><strong>Bienvenido a StudyFlow.</strong> Cargá tus materias para que pueda ayudarte a planificar tu semana.</>
+                  ? <><strong>Bienvenida a StudyFlow.</strong> Cargá tus materias para que pueda ayudarte a planificar tu semana.</>
                   : <><strong>Vas bien.</strong> Tenés {materias.length} {materias.length === 1 ? 'materia cargada' : 'materias cargadas'}. Recordá actualizar tu progreso regularmente.</>
                 }
               </div>
@@ -104,27 +190,14 @@ function App() {
             {mostrarForm && (
               <div style={estilos.formCard}>
                 <div style={estilos.formTitle}>Nueva materia</div>
-                <input
-                  style={estilos.input}
-                  placeholder="Nombre de la materia"
-                  value={nuevaMateria.nombre}
-                  onChange={e => setNuevaMateria({ ...nuevaMateria, nombre: e.target.value })}
-                />
+                <input style={estilos.input} placeholder="Nombre de la materia" value={nuevaMateria.nombre} onChange={e => setNuevaMateria({ ...nuevaMateria, nombre: e.target.value })} />
                 <div style={estilos.inputLabel}>Fecha del parcial (opcional)</div>
-                <input
-                  style={estilos.input}
-                  type="date"
-                  value={nuevaMateria.parcial}
-                  onChange={e => setNuevaMateria({ ...nuevaMateria, parcial: e.target.value })}
-                />
+                <input style={estilos.input} type="date" value={nuevaMateria.parcial} onChange={e => setNuevaMateria({ ...nuevaMateria, parcial: e.target.value })} />
                 <div style={estilos.inputLabel}>Fecha del final (opcional)</div>
-                <input
-                  style={estilos.input}
-                  type="date"
-                  value={nuevaMateria.final}
-                  onChange={e => setNuevaMateria({ ...nuevaMateria, final: e.target.value })}
-                />
-                <button style={estilos.btnPrimary} onClick={agregarMateria}>Guardar materia</button>
+                <input style={estilos.input} type="date" value={nuevaMateria.final} onChange={e => setNuevaMateria({ ...nuevaMateria, final: e.target.value })} />
+                <button style={estilos.btnPrimary} onClick={agregarMateria} disabled={guardando}>
+                  {guardando ? 'Guardando...' : 'Guardar materia'}
+                </button>
               </div>
             )}
 
@@ -143,20 +216,10 @@ function App() {
                 <div key={m.id} style={estilos.subjectCard}>
                   <div style={estilos.subjectTop}>
                     <div style={estilos.subjectName}>{m.nombre}</div>
-                    {diasP !== null && diasP >= 0 && (
-                      <div style={{ ...estilos.badge, ...colorDias(diasP) }}>
-                        Parcial en {diasP} días
-                      </div>
-                    )}
-                    {diasF !== null && diasF >= 0 && !diasP && (
-                      <div style={{ ...estilos.badge, ...colorDias(diasF) }}>
-                        Final en {diasF} días
-                      </div>
-                    )}
+                    {diasP !== null && diasP >= 0 && <div style={{ ...estilos.badge, ...colorDias(diasP) }}>Parcial en {diasP}d</div>}
+                    {diasF !== null && diasF >= 0 && !diasP && <div style={{ ...estilos.badge, ...colorDias(diasF) }}>Final en {diasF}d</div>}
                   </div>
-                  <div style={estilos.progressTrack}>
-                    <div style={{ ...estilos.progressFill, width: m.progreso + '%' }}></div>
-                  </div>
+                  <div style={estilos.progressTrack}><div style={{ ...estilos.progressFill, width: m.progreso + '%' }}></div></div>
                   <div style={estilos.subjectMeta}>{m.progreso}% del programa completado</div>
                 </div>
               );
@@ -212,9 +275,7 @@ function App() {
                       {m.final && <div style={{ fontSize: 11, color: '#888' }}>Final: {new Date(m.final).toLocaleDateString('es-AR')}</div>}
                     </div>
                     {m.parcial && diasRestantes(m.parcial) >= 0 && (
-                      <div style={{ ...estilos.badge, ...colorDias(diasRestantes(m.parcial)) }}>
-                        {diasRestantes(m.parcial)}d
-                      </div>
+                      <div style={{ ...estilos.badge, ...colorDias(diasRestantes(m.parcial)) }}>{diasRestantes(m.parcial)}d</div>
                     )}
                   </div>
                 ))}
@@ -257,7 +318,6 @@ const estilos = {
   header: { display: 'flex', alignItems: 'center', justifyContent: 'space-between' },
   saludo: { fontSize: 12, color: '#888' },
   titulo: { fontSize: 20, fontWeight: 500, color: '#222' },
-  avatar: { width: 36, height: 36, borderRadius: '50%', background: '#CECBF6', color: '#3C3489', fontSize: 13, fontWeight: 500, display: 'flex', alignItems: 'center', justifyContent: 'center' },
   rachaBox: { background: '#EEEDFE', borderRadius: 12, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10 },
   rachaNum: { fontSize: 22, fontWeight: 500, color: '#534AB7' },
   rachaLabel: { fontSize: 13, color: '#534AB7', fontWeight: 500 },
@@ -283,6 +343,8 @@ const estilos = {
   inputLabel: { fontSize: 11, color: '#888', marginTop: 4 },
   input: { padding: '10px 12px', borderRadius: 8, border: '1px solid #ddd', fontSize: 13, color: '#222', background: 'white', outline: 'none', width: '100%', boxSizing: 'border-box' },
   btnPrimary: { background: '#534AB7', color: 'white', border: 'none', borderRadius: 8, padding: '10px 16px', fontSize: 13, fontWeight: 500, cursor: 'pointer', marginTop: 4 },
+  btnGoogle: { background: 'white', color: '#222', border: '1.5px solid #ddd', borderRadius: 10, padding: '12px 20px', fontSize: 14, fontWeight: 500, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10, width: '100%', justifyContent: 'center' },
+  btnLogout: { fontSize: 11, color: '#888', background: 'none', border: '1px solid #ddd', borderRadius: 6, padding: '4px 8px', cursor: 'pointer' },
   subjectCard: { background: 'white', border: '1px solid #eee', borderRadius: 12, padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 6 },
   subjectTop: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' },
   subjectName: { fontSize: 14, fontWeight: 500, color: '#222' },
